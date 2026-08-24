@@ -265,7 +265,12 @@ if __name__ == '__main__':
         
         obj_path = bop_dataset_item.obj_model_list[bop_dataset_item.obj_id_list.index(obj_id)]
         print(obj_path)
-        obj_ply = load_ply(obj_path)
+        # Pose annotations and shared model metadata are in millimetres.  The
+        # label generator creates this scale-corrected mesh beside the source
+        # metre mesh; use it for ADD/ADD-S evaluation when available.
+        obj_root, obj_ext = os.path.splitext(obj_path)
+        obj_metric_path = obj_root + '.bop_mm' + obj_ext
+        obj_ply = load_ply(obj_metric_path if os.path.isfile(obj_metric_path) else obj_path)
         obj_info = bop_dataset_item.obj_info_list[bop_dataset_item.obj_id_list.index(obj_id)]
         
         # Create the save path.

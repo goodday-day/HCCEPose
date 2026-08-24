@@ -251,7 +251,36 @@ class bop_dataset():
             return
         if local_rank == 0:
             print('obj model path: ', self.model_path)
-        self.model_info = load_json2dict(os.path.join(self.model_path, 'models_info.json'))
+        # RT-Less keeps canonical model bounds in the shared BOP metadata
+        # directory.  Per-object metadata contains Isaac scene-placement
+        # bounds (including a +400 mm Z offset), which do not share the
+        # CAD-local coordinate frame used by scene_gt.
+        shared_model_info_path = os.path.join(
+            os.path.dirname(dataset_path), 'models', 'models_info.json'
+        )
+        if os.path.isfile(shared_model_info_path):
+            shared_model_info = {
+                key: self._model_info_m_to_mm(info)
+                for key, info in load_json2dict(shared_model_info_path).items()
+            }
+            object_id_text = self.dataset_name[3:]
+            if (
+                self.dataset_name.startswith('obj')
+                and object_id_text.isdigit()
+                and object_id_text in shared_model_info
+            ):
+                self.model_info = {object_id_text: shared_model_info[object_id_text]}
+                model_info_source = shared_model_info_path + ' (m -> mm)'
+            elif self.dataset_name.startswith('obj') and object_id_text.isdigit():
+                self.model_info = load_json2dict(os.path.join(self.model_path, 'models_info.json'))
+                model_info_source = os.path.join(self.model_path, 'models_info.json')
+            else:
+                self.model_info = shared_model_info
+                model_info_source = shared_model_info_path + ' (m -> mm)'
+            if local_rank == 0:
+                print('model metadata: ', model_info_source)
+        else:
+            self.model_info = load_json2dict(os.path.join(self.model_path, 'models_info.json'))
         self.obj_id_list = []
         self.obj_model_list = []
         self.obj_info_list = []
@@ -272,6 +301,22 @@ class bop_dataset():
             print('-*-' * 30)
             print()
         pass
+
+    @staticmethod
+    def _model_info_m_to_mm(model_info):
+        """Convert shared RT-Less BOP metadata from metres to millimetres."""
+        converted = copy.deepcopy(model_info)
+        for key in ('diameter', 'min_x', 'min_y', 'min_z', 'size_x', 'size_y', 'size_z'):
+            if key in converted:
+                converted[key] = float(converted[key]) * 1000.0
+        for symmetry in converted.get('symmetries_discrete', []):
+            matrix = np.asarray(symmetry, dtype=np.float64).reshape(4, 4)
+            matrix[:3, 3] *= 1000.0
+            symmetry[:] = matrix.reshape(-1).tolist()
+        for symmetry in converted.get('symmetries_continuous', []):
+            if 'offset' in symmetry:
+                symmetry['offset'] = (np.asarray(symmetry['offset'], dtype=np.float64) * 1000.0).tolist()
+        return converted
     
     def load_folder(self, folder_name, scene_num = 200, vis = 0.0):
         '''
@@ -1398,4 +1443,3 @@ class test_bop_dataset_back_front(Dataset):
         GT_Front_hcce = torch.from_numpy(GT_Front_hcce).permute(2, 0, 1)
         GT_Back_hcce = torch.from_numpy(GT_Back_hcce).permute(2, 0, 1)
         return rgb_c, mask_vis_c, GT_Front_hcce, GT_Back_hcce
-
