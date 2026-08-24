@@ -81,6 +81,33 @@ def apply_manifest_subset(dataset, obj_id, sample_keys):
     if dataset.nSamples == 0:
         raise RuntimeError('No samples matched the manifest for obj_id=%s.' % obj_id)
 
+
+def symmetry_aware_pose_errors(pred_R, pred_t, gt_R, gt_t, obj_info):
+    """Return the smallest pose error across discrete model symmetries.
+
+    BOP symmetries are object-frame transforms.  Applying one to the ground
+    truth produces an equally valid camera-frame pose, so 5deg5mm must compare
+    the prediction with every such pose rather than only the raw scene_gt pose.
+    """
+    identity = np.eye(4, dtype=np.float64)
+    symmetries = [identity]
+    for symmetry in obj_info.get('symmetries_discrete', []):
+        symmetries.append(np.asarray(symmetry, dtype=np.float64).reshape(4, 4))
+
+    pred_t = np.asarray(pred_t, dtype=np.float64).reshape(3)
+    gt_R = np.asarray(gt_R, dtype=np.float64).reshape(3, 3)
+    gt_t = np.asarray(gt_t, dtype=np.float64).reshape(3)
+    errors = []
+    for symmetry in symmetries:
+        equivalent_R = gt_R.dot(symmetry[:3, :3])
+        equivalent_t = gt_R.dot(symmetry[:3, 3]) + gt_t
+        relative_rotation = np.asarray(pred_R, dtype=np.float64).dot(equivalent_R.T)
+        cos_angle = np.clip((np.trace(relative_rotation) - 1) / 2, -1.0, 1.0)
+        rotation_error_deg = np.degrees(np.arccos(cos_angle))
+        translation_error_mm = np.linalg.norm(pred_t - equivalent_t)
+        errors.append((rotation_error_deg, translation_error_mm))
+    return errors
+
 def test(obj_ply, obj_info, net: HccePose_BF_Net, test_loader: torch.utils.data.DataLoader):
     net.eval()
     add_list_l = []
@@ -118,11 +145,13 @@ def test(obj_ply, obj_info, net: HccePose_BF_Net, test_loader: torch.utils.data.
                 info_list = solve_PnP_comb(pred_m_bf_c_np_i, train=True)
                 if len(info_list):
                     best_pose = max(info_list, key=lambda info: info['num'])
-                    relative_rotation = best_pose['rot'].dot(cam_R_m2c_i.T)
-                    cos_angle = np.clip((np.trace(relative_rotation) - 1) / 2, -1.0, 1.0)
-                    rotation_error_deg = np.degrees(np.arccos(cos_angle))
-                    translation_error_mm = np.linalg.norm(np.asarray(best_pose['tvecs']).reshape(3) - cam_t_m2c_i.reshape(3))
-                    pose_5deg5mm_success += int(rotation_error_deg <= 5.0 and translation_error_mm <= 5.0)
+                    symmetry_errors = symmetry_aware_pose_errors(
+                        best_pose['rot'], best_pose['tvecs'], cam_R_m2c_i, cam_t_m2c_i, obj_info
+                    )
+                    pose_5deg5mm_success += int(any(
+                        rotation_error_deg <= 5.0 and translation_error_mm <= 5.0
+                        for rotation_error_deg, translation_error_mm in symmetry_errors
+                    ))
                     pose_eval_count += 1
                 
                 for info_id_, info_i in enumerate(info_list):

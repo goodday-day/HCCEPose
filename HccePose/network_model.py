@@ -1373,11 +1373,11 @@ def get_checkpoint(path):
     '''
     ---
     ---
-    Pick the checkpoint file whose filename encodes the highest score.
+    Pick the latest regular checkpoint.
     ---
     ---
-    Parses numeric prefixes before the `step` substring in each filename and
-    returns the full path of the argmax file.
+    Regular checkpoints are named by their integer training step. Ignore logs,
+    directories, and best-score artifacts, then return the highest step.
 
     Args:
         - path: Directory containing best-score checkpoints.
@@ -1386,10 +1386,11 @@ def get_checkpoint(path):
         - Full path to the selected checkpoint file.
     ---
     ---
-    选择文件名中所编码分数最高的 checkpoint 文件路径。
+    选择最新的常规 checkpoint 文件路径。
     ---
     ---
-    解析每个文件名中 `step` 子串前的数值前缀，返回分数最大文件的完整路径。
+    仅解析纯数字命名的训练步 checkpoint，忽略日志、目录和 best checkpoint，
+    返回训练步数最大的完整路径。
 
     参数:
         - path: 存放 best checkpoint 的目录。
@@ -1397,10 +1398,14 @@ def get_checkpoint(path):
     返回:
         - 被选中的 checkpoint 文件的完整路径。
     '''
-    saved_ckpt = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
-    saved_ckpt_s = [float(i.split('step')[0].replace('_', '.')) for i in saved_ckpt]
-    saved_ckpt_id = np.argmax(saved_ckpt_s)
-    return os.path.join(path, saved_ckpt[saved_ckpt_id])
+    saved_ckpt = [
+        int(name)
+        for name in os.listdir(path)
+        if name.isdigit() and os.path.isfile(os.path.join(path, name))
+    ]
+    if not saved_ckpt:
+        raise FileNotFoundError('No numeric checkpoint found in: {}'.format(path))
+    return os.path.join(path, str(max(saved_ckpt)))
 
 def save_best_checkpoint(best_score_path, net, optimizer, best_score, iteration_step, keypoints_ = None, w_optimizer = True):
     '''
