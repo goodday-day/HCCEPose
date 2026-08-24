@@ -204,11 +204,11 @@ if __name__ == '__main__':
     
     # Number of samples per training epoch.
     # 每轮训练的样本数量。
-    batch_size = 24
+    batch_size = 48
     
     # Number of worker processes used by the DataLoader.
     # DataLoader 的进程数量。
-    num_workers = 12
+    num_workers = 16
     
     # The number of epochs between saving checkpoints.
     # 保存检查点的间隔轮数。
@@ -235,10 +235,14 @@ if __name__ == '__main__':
     parser.add_argument('--dataset-path', default=dataset_path)
     parser.add_argument('--obj-id', default=start_obj_id, type=int)
     parser.add_argument('--save-dir', default=None)
+    parser.add_argument('--batch-size', default=batch_size, type=int)
+    parser.add_argument('--num-workers', default=num_workers, type=int)
     args = parser.parse_args()
     dataset_path = args.dataset_path
     start_obj_id = args.obj_id
     end_obj_id = args.obj_id
+    batch_size = args.batch_size
+    num_workers = args.num_workers
     if not ide_debug:
         torch.distributed.init_process_group(backend='nccl')
         torch.distributed.barrier() 
@@ -315,12 +319,26 @@ if __name__ == '__main__':
         # 分别更新训练和测试数据加载器。
         train_bop_dataset_back_front_item.update_obj_id(obj_id, obj_path)
         apply_manifest_subset(train_bop_dataset_back_front_item, obj_id, load_manifest_sample_keys(args.train_manifest, obj_id))
-        train_loader = torch.utils.data.DataLoader(train_bop_dataset_back_front_item, batch_size=batch_size, 
-                                                shuffle=True, num_workers=num_workers, drop_last=True) 
+        loader_options = dict(
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=num_workers > 0,
+        )
+        train_loader = torch.utils.data.DataLoader(
+            train_bop_dataset_back_front_item,
+            shuffle=True,
+            drop_last=True,
+            **loader_options,
+        )
         test_bop_dataset_back_front_item.update_obj_id(obj_id, obj_path)
         apply_manifest_subset(test_bop_dataset_back_front_item, obj_id, load_manifest_sample_keys(args.val_manifest, obj_id))
-        test_loader = torch.utils.data.DataLoader(test_bop_dataset_back_front_item, batch_size=batch_size, 
-                                                shuffle=False, num_workers=num_workers, drop_last=False) 
+        test_loader = torch.utils.data.DataLoader(
+            test_bop_dataset_back_front_item,
+            shuffle=False,
+            drop_last=False,
+            **loader_options,
+        )
         
         # Train
         # 训练

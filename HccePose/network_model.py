@@ -1306,8 +1306,14 @@ def save_checkpoint(path, net, iteration_step, best_score, optimizer, max_to_kee
     
     if not os.path.isdir(path):
         os.makedirs(path)
-    saved_ckpt = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
-    saved_ckpt = [int(i) for i in saved_ckpt]
+    # Checkpoints are named by their integer training step.  The same
+    # directory may also contain logs or other artifacts (for example
+    # ``train.log``), which must not participate in checkpoint pruning.
+    saved_ckpt = [
+        int(name)
+        for name in os.listdir(path)
+        if name.isdigit() and os.path.isfile(os.path.join(path, name))
+    ]
     saved_ckpt.sort()
     
     num_saved_ckpt = len(saved_ckpt)

@@ -29,6 +29,7 @@ for obj_id in "${seen_object_ids[@]}"; do
     "${python_bin}" -u s4_p2_train_bf_pbr.py \
     --dataset-path "${dataset_path}" --obj-id "${obj_id}" \
     --train-manifest "${train_manifest}" --val-manifest "${val_manifest}" \
+    --batch-size 24 --num-workers 16 \
     --save-dir "${experiment_dir}" \
     2>&1 | tee "${experiment_dir}/train.log"
 done

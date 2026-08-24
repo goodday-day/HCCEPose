@@ -911,9 +911,9 @@ class rendering_bop_dataset_back_front(Dataset):
         '''
 
         self.current_obj_id = obj_id
-        self.current_obj_path = obj_path
         self.nSamples = len(self.dataset_info['obj_info']['obj_%s'%str(self.current_obj_id).rjust(6, '0')])
         self.model_info_obj = copy.deepcopy(self.bop_dataset_item.model_info[str(self.current_obj_id)])
+        self.current_obj_path = self._prepare_renderer_model(obj_path, self.model_info_obj)
         
         if 'symmetries_continuous' in self.model_info_obj:
             if len(self.model_info_obj['symmetries_continuous']):
@@ -926,6 +926,41 @@ class rendering_bop_dataset_back_front(Dataset):
             if len(self.model_info_obj['symmetries_discrete']) == 0:
                 self.model_info_obj.pop("symmetries_discrete")
         return
+
+    @staticmethod
+    def _prepare_renderer_model(obj_path, model_info):
+        """Return a mesh expressed in the millimetres used by BOP poses.
+
+        Isaac exports the copied RT-Less meshes in metres, while ``scene_gt``
+        translations and BOP renderers use millimetres.  Rendering a metre
+        mesh with millimetre poses makes it 1000 times too small and produces
+        empty front/back coordinate maps.  Use the BOP bounds to detect that
+        exact metre-to-millimetre mismatch and cache a scaled rendering mesh
+        next to the source mesh.  Models already expressed in millimetres are
+        returned unchanged.
+        """
+        model = inout.load_ply(obj_path)
+        vertices = np.asarray(model['pts'], dtype=np.float64)
+        mesh_size = np.ptp(vertices, axis=0)
+        bop_size_mm = np.asarray(
+            [model_info['size_x'], model_info['size_y'], model_info['size_z']],
+            dtype=np.float64,
+        )
+
+        if not np.allclose(mesh_size * 1000.0, bop_size_mm, rtol=0.02, atol=1e-3):
+            return obj_path
+
+        root, ext = os.path.splitext(obj_path)
+        scaled_path = root + '.bop_mm' + ext
+        scaled_model = dict(model)
+        scaled_model['pts'] = vertices * 1000.0
+        inout.save_ply(
+            scaled_path,
+            scaled_model,
+            extra_header_comments=['Generated for BOP rendering: vertices scaled m -> mm.'],
+        )
+        print('Scaled metre mesh for BOP renderer: {} -> {}'.format(obj_path, scaled_path))
+        return scaled_path
     
     def worker_init_fn(self, worker_id):
         '''
@@ -1363,5 +1398,4 @@ class test_bop_dataset_back_front(Dataset):
         GT_Front_hcce = torch.from_numpy(GT_Front_hcce).permute(2, 0, 1)
         GT_Back_hcce = torch.from_numpy(GT_Back_hcce).permute(2, 0, 1)
         return rgb_c, mask_vis_c, GT_Front_hcce, GT_Back_hcce
-
 
