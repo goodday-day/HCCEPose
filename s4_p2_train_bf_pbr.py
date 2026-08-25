@@ -40,7 +40,7 @@ demo-tex-objs
 ```
 '''
 
-import os, torch, argparse
+import os, csv, torch, argparse
 import itertools
 import numpy as np
 from tqdm import tqdm
@@ -55,9 +55,37 @@ from HccePose.PnP_solver import solve_PnP, solve_PnP_comb
 from HccePose.metric import add_s
 from kasal.bop_toolkit_lib.inout import load_ply
 
+
+def load_manifest_sample_keys(manifest_path, obj_id):
+    if manifest_path is None:
+        return None
+    with open(manifest_path, newline='') as manifest_file:
+        return {
+            (str(row['scene_id']).zfill(6), str(row['image_id']).zfill(6), int(row['gt_index']))
+            for row in csv.DictReader(manifest_file)
+            if int(row['obj_id']) == obj_id
+        }
+
+
+def apply_manifest_subset(dataset, obj_id, sample_keys):
+    if sample_keys is None:
+        return
+    obj_key = 'obj_%s' % str(obj_id).rjust(6, '0')
+    selected = []
+    for sample in dataset.dataset_info['obj_info'].get(obj_key, []):
+        gt_index = int(os.path.splitext(os.path.basename(sample['mask_path']))[0].rsplit('_', 1)[1])
+        if (sample['scene'], sample['image'], gt_index) in sample_keys:
+            selected.append(sample)
+    dataset.dataset_info['obj_info'][obj_key] = selected
+    dataset.nSamples = len(selected)
+    if dataset.nSamples == 0:
+        raise RuntimeError('No samples matched the manifest for obj_id=%s.' % obj_id)
+
 def test(obj_ply, obj_info, net: HccePose_BF_Net, test_loader: torch.utils.data.DataLoader):
     net.eval()
     add_list_l = []
+    pose_5deg5mm_success = 0
+    pose_eval_count = 0
     for batch_idx, (rgb_c, mask_vis_c, GT_Front_hcce, GT_Back_hcce, Bbox, cam_K, cam_R_m2c, cam_t_m2c) in tqdm(enumerate(test_loader)):
         if torch.cuda.is_available():
             rgb_c=rgb_c.to('cuda:'+CUDA_DEVICE, non_blocking = True)
@@ -88,6 +116,14 @@ def test(obj_ply, obj_info, net: HccePose_BF_Net, test_loader: torch.utils.data.
             pred_m_bf_c_np = [(pred_mask_np[i], pred_front_code_0_np[i], pred_back_code_0_np[i], coord_image_np[i], cam_K[i]) for i in range(pred_mask_np.shape[0])]
             for (cam_R_m2c_i, cam_t_m2c_i, pred_m_bf_c_np_i) in zip(cam_R_m2c.detach().cpu().numpy(), cam_t_m2c.detach().cpu().numpy(), pred_m_bf_c_np):
                 info_list = solve_PnP_comb(pred_m_bf_c_np_i, train=True)
+                if len(info_list):
+                    best_pose = max(info_list, key=lambda info: info['num'])
+                    relative_rotation = best_pose['rot'].dot(cam_R_m2c_i.T)
+                    cos_angle = np.clip((np.trace(relative_rotation) - 1) / 2, -1.0, 1.0)
+                    rotation_error_deg = np.degrees(np.arccos(cos_angle))
+                    translation_error_mm = np.linalg.norm(np.asarray(best_pose['tvecs']).reshape(3) - cam_t_m2c_i.reshape(3))
+                    pose_5deg5mm_success += int(rotation_error_deg <= 5.0 and translation_error_mm <= 5.0)
+                    pose_eval_count += 1
                 
                 for info_id_, info_i in enumerate(info_list):
                     info_list[info_id_]['add'] = add_s(obj_ply, obj_info, [[cam_R_m2c_i, cam_t_m2c_i]], [[info_i['rot'], info_i['tvecs']]])[0]
@@ -112,6 +148,7 @@ def test(obj_ply, obj_info, net: HccePose_BF_Net, test_loader: torch.utils.data.
     max_acc = np.max(add_list_l)
     print('max acc id: ', max_acc_id)
     print('max acc: ', max_acc)
+    print('5deg5mm: %.4f (%s/%s)' % (pose_5deg5mm_success / max(pose_eval_count, 1), pose_5deg5mm_success, pose_eval_count))
     net.train()
     return max_acc_id, max_acc, add_list_l
 
@@ -144,7 +181,7 @@ if __name__ == '__main__':
     
     # Specify the path to the dataset folder.
     # 指定数据集文件夹的路径。
-    dataset_path = '/root/xxxxxx/demo-tex-objs'
+    dataset_path = '/home/yaohua/PTV3/Pointcept/data/rtless/bop/obj100'
     
     # Specify the name of the subfolder in the dataset used for loading training data.
     # 指定数据集中用于加载训练数据的子文件夹名称。
@@ -154,8 +191,8 @@ if __name__ == '__main__':
     # `start_obj_id` is the starting object ID, and `end_obj_id` is the ending object ID.
     # 训练的物体 ID 范围。  
     # `start_obj_id` 为起始物体 ID，`end_obj_id` 为终止物体 ID。
-    start_obj_id = 1
-    end_obj_id =5
+    start_obj_id = 100
+    end_obj_id = 100
     
     # Total number of training epochs.
     # 总训练轮数。
@@ -193,7 +230,15 @@ if __name__ == '__main__':
         parser.add_argument("--local-rank", default=0, type=int)
     else:
         parser.add_argument("--local-rank", default=-1, type=int)
+    parser.add_argument('--train-manifest', default=None)
+    parser.add_argument('--val-manifest', default=None)
+    parser.add_argument('--dataset-path', default=dataset_path)
+    parser.add_argument('--obj-id', default=start_obj_id, type=int)
+    parser.add_argument('--save-dir', default=None)
     args = parser.parse_args()
+    dataset_path = args.dataset_path
+    start_obj_id = args.obj_id
+    end_obj_id = args.obj_id
     if not ide_debug:
         torch.distributed.init_process_group(backend='nccl')
         torch.distributed.barrier() 
@@ -209,7 +254,7 @@ if __name__ == '__main__':
     
     # ratio = 0.01 means selecting 1% of samples from the dataset for testing.
     # ratio = 0.01 表示从数据集中选择 1% 的样本作为测试数据。
-    test_bop_dataset_back_front_item = test_bop_dataset_back_front(bop_dataset_item, train_folder_name, padding_ratio=padding_ratio, ratio=0.01)
+    test_bop_dataset_back_front_item = test_bop_dataset_back_front(bop_dataset_item, train_folder_name, padding_ratio=padding_ratio, ratio=1.0 if args.val_manifest else 0.01)
         
     for obj_id in range(start_obj_id, end_obj_id + 1):
         
@@ -221,14 +266,9 @@ if __name__ == '__main__':
         
         # Create the save path.
         # 创建保存路径。
-        save_path = os.path.join(dataset_path, 'HccePose', 'obj_%s'%str(obj_id).rjust(2, '0'))
+        save_path = args.save_dir or os.path.join(dataset_path, 'HccePose', 'obj_%s'%str(obj_id).rjust(2, '0'))
         best_save_path = os.path.join(save_path, 'best_score')
-        try: os.mkdir(os.path.join(dataset_path, 'HccePose')) 
-        except: 1
-        try: os.mkdir(save_path) 
-        except: 1
-        try: os.mkdir(best_save_path) 
-        except: 1
+        os.makedirs(best_save_path, exist_ok=True)
 
         # Get the 3D dimensions of the object.
         # 获取物体的 3D 尺寸。
@@ -274,9 +314,11 @@ if __name__ == '__main__':
         # Update the training and testing data loaders respectively.
         # 分别更新训练和测试数据加载器。
         train_bop_dataset_back_front_item.update_obj_id(obj_id, obj_path)
+        apply_manifest_subset(train_bop_dataset_back_front_item, obj_id, load_manifest_sample_keys(args.train_manifest, obj_id))
         train_loader = torch.utils.data.DataLoader(train_bop_dataset_back_front_item, batch_size=batch_size, 
                                                 shuffle=True, num_workers=num_workers, drop_last=True) 
         test_bop_dataset_back_front_item.update_obj_id(obj_id, obj_path)
+        apply_manifest_subset(test_bop_dataset_back_front_item, obj_id, load_manifest_sample_keys(args.val_manifest, obj_id))
         test_loader = torch.utils.data.DataLoader(test_bop_dataset_back_front_item, batch_size=batch_size, 
                                                 shuffle=False, num_workers=num_workers, drop_last=False) 
         

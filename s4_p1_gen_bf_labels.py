@@ -25,15 +25,19 @@ demo-bin-picking
 ```
 '''
 
-import torch
+import argparse, torch
 from HccePose.bop_loader import bop_dataset, rendering_bop_dataset_back_front
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset-path', default='/home/yaohua/PTV3/Pointcept/data/rtless/bop/obj100')
+    parser.add_argument('--obj-id', default=100, type=int)
+    args = parser.parse_args()
     
     # Specify the path to the dataset folder.
     # 指定数据集文件夹的路径。
-    dataset_path = '/root/xxxxxx/demo-bin-picking'
+    dataset_path = args.dataset_path
     
     # Create an instance for loading the BOP dataset.
     # 创建一个用于加载 BOP 数据集的实例。
@@ -47,6 +51,8 @@ if __name__ == '__main__':
     # Iterate through all object IDs and their 3D model paths to generate label maps of front and back 3D coordinates for each object.
     # 遍历所有物体的 ID 及其 3D 模型路径，为每个物体生成正面和背面的 3D 坐标标签图。
     for (obj_id, obj_path) in zip(bop_dataset_item.obj_id_list, bop_dataset_item.obj_model_list):
+        if obj_id != args.obj_id:
+            continue
         print(obj_path)
         
         # The `rendering_bop_dataset_back_front` function loads data for all objects and switches between them using the `update_obj_id` function.
